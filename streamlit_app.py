@@ -12,6 +12,9 @@ import tempfile
 from langchain.agents import create_tool_calling_agent, AgentExecutor
 from langchain_community.utilities import SerpAPIWrapper
 from langchain.agents import Tool
+from PIL import Image
+import pytesseract
+from langchain_core.documents import Document
 
 # .env 파일 로드
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -66,6 +69,38 @@ def load_pdf_files(uploaded_files):
     )
     return retriever_tool
 
+def describe_image(image, filename):
+    width, height = image.size
+    mode = image.mode
+    format = image.format if image.format else "알 수 없음"
+    return f"이미지 파일명: {filename}\n이미지 형식: {format}\n크기: {width}x{height} 픽셀\n색상 모드: {mode}"
+
+def load_image_files(uploaded_images):
+    all_documents = []
+    for uploaded_image in uploaded_images:
+        image = Image.open(uploaded_image)
+        description = describe_image(image, uploaded_image.name)
+        text = pytesseract.image_to_string(image, lang='kor+eng')
+        content = description
+        if text.strip():
+            content += f"\n\n추출된 텍스트(OCR):\n{text.strip()}"
+        doc = Document(page_content=content, metadata={"source": uploaded_image.name})
+        all_documents.append(doc)
+    if not all_documents:
+        return None
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    split_docs = text_splitter.split_documents(all_documents)
+    if not split_docs:
+        return None
+    vector = FAISS.from_documents(split_docs, OpenAIEmbeddings())
+    retriever = vector.as_retriever()
+    retriever_tool = create_retriever_tool(
+        retriever,
+        name="image_search",
+        description="이미지의 스펙 및 OCR 텍스트를 검색합니다."
+    )
+    return retriever_tool
+
 # ✅ Agent 대화 실행
 def chat_with_agent(user_input, agent_executor):
     result = agent_executor({"input": user_input})
@@ -101,6 +136,7 @@ def main():
         st.session_state["SERPAPI_API"] = st.text_input("SERPAPI_API 키", placeholder="Enter Your API Key", type="password")
         st.markdown('---')
         pdf_docs = st.file_uploader("Upload your PDF Files", accept_multiple_files=True, key="pdf_uploader")
+        image_docs = st.file_uploader("Upload your Image Files", accept_multiple_files=True, type=["png", "jpg", "jpeg"], key="image_uploader")
 
     # ✅ 키 입력 확인
     if st.session_state["OPENAI_API"] and st.session_state["SERPAPI_API"]:
@@ -111,7 +147,12 @@ def main():
         tools = []
         if pdf_docs:
             pdf_search = load_pdf_files(pdf_docs)
-            tools.append(pdf_search)
+            if pdf_search:
+                tools.append(pdf_search)
+        if image_docs:
+            image_search = load_image_files(image_docs)
+            if image_search:
+                tools.append(image_search)
         tools.append(search_web())
 
         # LLM 설정
@@ -122,6 +163,7 @@ def main():
                 ("system",
                 "Be sure to answer in Korean. You are a helpful assistant. "
                 "Make sure to use the `pdf_search` tool for searching information from the pdf document. "
+                "Make sure to use the `image_search` tool for searching information about uploaded images (스펙, 크기, 형식, OCR 등). "
                 "If you can't find the information from the PDF document, use the `web_search` tool for searching information from the web. "
                 "If the user’s question contains words like '최신', '현재', or '오늘', you must ALWAYS use the `web_search` tool to ensure real-time information is retrieved. "
                 "Please always include emojis in your responses with a friendly tone. "
