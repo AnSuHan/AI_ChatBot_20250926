@@ -47,18 +47,28 @@ def search_web():
 # ✅ PDF 업로드 → 벡터DB → 검색 툴 생성
 def load_pdf_files(uploaded_files):
     all_documents = []
+    if not uploaded_files:
+        return None
     for uploaded_file in uploaded_files:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-            tmp_file.write(uploaded_file.read())
-            tmp_file_path = tmp_file.name
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+                tmp_file.write(uploaded_file.read())
+                tmp_file_path = tmp_file.name
 
-        loader = PyPDFLoader(tmp_file_path)
-        documents = loader.load()
-        all_documents.extend(documents)
+            loader = PyPDFLoader(tmp_file_path)
+            documents = loader.load()
+            all_documents.extend(documents)
+        except Exception as e:
+            # PDF 파일 처리 오류 시 안내 메시지 추가
+            doc = Document(page_content=f"PDF 파일을 처리할 수 없습니다: {uploaded_file.name}\n오류: {str(e)}", metadata={"source": uploaded_file.name})
+            all_documents.append(doc)
 
+    if not all_documents:
+        return None
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     split_docs = text_splitter.split_documents(all_documents)
-
+    if not split_docs:
+        return None
     vector = FAISS.from_documents(split_docs, OpenAIEmbeddings())
     retriever = vector.as_retriever()
 
@@ -77,15 +87,23 @@ def describe_image(image, filename):
 
 def load_image_files(uploaded_images):
     all_documents = []
+    # 이미지 업로드가 없을 때 None이 아니라 빈 리스트가 들어올 수 있음
+    if not uploaded_images:
+        return None
     for uploaded_image in uploaded_images:
-        image = Image.open(uploaded_image)
-        description = describe_image(image, uploaded_image.name)
-        text = pytesseract.image_to_string(image, lang='kor+eng')
-        content = description
-        if text.strip():
-            content += f"\n\n추출된 텍스트(OCR):\n{text.strip()}"
-        doc = Document(page_content=content, metadata={"source": uploaded_image.name})
-        all_documents.append(doc)
+        try:
+            image = Image.open(uploaded_image)
+            description = describe_image(image, uploaded_image.name)
+            text = pytesseract.image_to_string(image, lang='kor+eng')
+            content = description
+            if text.strip():
+                content += f"\n\n추출된 텍스트(OCR):\n{text.strip()}"
+            doc = Document(page_content=content, metadata={"source": uploaded_image.name})
+            all_documents.append(doc)
+        except Exception as e:
+            # 이미지 파일이 아니거나 오류 발생 시 안내 메시지 추가
+            doc = Document(page_content=f"이미지 파일을 처리할 수 없습니다: {uploaded_image.name}\n오류: {str(e)}", metadata={"source": uploaded_image.name})
+            all_documents.append(doc)
     if not all_documents:
         return None
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
@@ -155,8 +173,8 @@ def main():
                 tools.append(image_search)
         tools.append(search_web())
 
-        # LLM 설정
-        llm = ChatOpenAI(model_name="gpt-4o-mini", temperature=0)
+        # LLM 설정 (스트리밍 활성화)
+        llm = ChatOpenAI(model_name="gpt-4o-mini", temperature=0, streaming=True)
 
         prompt = ChatPromptTemplate.from_messages(
             [
@@ -174,30 +192,34 @@ def main():
             ]
         )
 
-
         agent = create_tool_calling_agent(llm, tools, prompt)
         agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
 
-        # 입력창
+        # 입력창 및 스트림 출력
         user_input = st.chat_input('질문이 무엇인가요?')
 
         if user_input:
             session_id = "default_session"
             session_history = get_session_history(session_id)
 
-            if session_history.messages:
-                prev_msgs = [{"role": msg['role'], "content": msg['content']} for msg in session_history.messages]
-                response = chat_with_agent(user_input + "\n\nPrevious Messages: " + str(prev_msgs), agent_executor)
-            else:
-                response = chat_with_agent(user_input, agent_executor)
-
             st.session_state["messages"].append({"role": "user", "content": user_input})
+            st.chat_message("user").write(user_input)
+
+            # 답변 스트림 출력 (로딩 아이콘 표시)
+            with st.chat_message("assistant"):
+                response_chunks = []
+                placeholder = st.empty()
+                with st.spinner("답변 생성 중..."):  # ✅ 로딩 아이콘 표시
+                    response_stream = agent_executor.stream({"input": user_input})
+                    for chunk in response_stream:
+                        if "output" in chunk:
+                            response_chunks.append(chunk["output"])
+                            placeholder.markdown("".join(response_chunks))
+                response = "".join(response_chunks)
             st.session_state["messages"].append({"role": "assistant", "content": response})
 
             session_history.add_message({"role": "user", "content": user_input})
             session_history.add_message({"role": "assistant", "content": response})
-
-        print_messages()
 
     else:
         st.warning("OpenAI API 키와 SerpAPI API 키를 입력하세요.")
