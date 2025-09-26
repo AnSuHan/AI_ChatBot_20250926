@@ -139,10 +139,11 @@ def print_messages():
 def main():
     st.set_page_config(page_title="AI 비서", layout="wide", page_icon="🤖")
 
-    with st.container():
-        st.image('./chatbot_logo.png', use_container_width=True)
-        st.markdown('---')
-        st.title("안녕하세요! RAG를 활용한 'AI 비서 톡톡이' 입니다")
+    # ✅ 전체 너비를 활용해 이미지 크게 출력
+    col = st.columns(1)[0]
+    col.image('./chatbot_logo.png', use_container_width=True)
+    st.markdown('---')
+    st.title("안녕하세요! RAG를 활용한 'AI 비서 톡톡이' 입니다")
 
     if "messages" not in st.session_state:
         st.session_state["messages"] = []
